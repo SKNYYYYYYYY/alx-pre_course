@@ -1,29 +1,188 @@
-totem {
-    version: 2
-    secauth: on
-    cluster_name: mycluster
-    transport: udpu
-    interface {
-        ringnumber: 0
-        bindnetaddr: 192.160.53.0
-        mcastport: 5405
-        ttl: 1
-    }
+#!/bin/bash
+#
+# Init script for Zabbix Server
+#
+# chkconfig: 2345 80 20
+# description: Zabbix Server
+#
+# processname: zabbix-server
+
+# Source function library.
+. /etc/rc.d/init.d/functions
+# Source networking configuration.
+. /etc/sysconfig/network
+# Check that networking is up. If you are running without a network, comment this out.
+[ "${NETWORKING}" = "no" ] && exit 0
+
+# Function return value contants
+LSB_OK=0
+LSB_DEAD_PID_EXISTS=1
+LSB_DEAD_LOCK_EXISTS=2
+LSB_NOT_RUNNING=3
+LSB_UNKNOWN=4
+
+# Status constants
+STATUS_SUCCESS=0
+STATUS_FAILURE=1
+
+effUserName=${USER:-$(id -urn)}
+
+prog="Zabbix Server"
+user="zabbix"
+zabbixHome="/usr/local/zabbix"
+pidFile=$(cat /etc/zabbix/zabbix_server.conf | grep -E ^PidFile= | cut -d "=" -f2)
+
+if [ ${effUserName} == "root" ]; then
+	startCmd="--user=$user ${zabbixHome}/sbin/zabbix_server -c ${zabbixHome}/etc/zabbix_server.conf"
+elif [ "${effUserName}" == "${user}" ]; then
+	startCmd="${zabbixHome}/sbin/zabbix_server -c ${zabbixHome}/etc/zabbix_server.conf"
+else
+	echo "You must be root or the ${user} user to run this script."
+	exit $LSB_UNKNOWN
+fi
+
+procSearchString="${zabbixHome}/sbin/zabbix_server"
+
+printStatus(){
+	if [ $1 -eq $STATUS_FAILURE ]; then
+		failure
+		echo
+	else
+		success
+		echo
+	fi
 }
 
-logging {
-    to_logfile: yes
-    logfile: /var/log/corosync/corosync.log
-    to_syslog: yes
+getpid(){
+	local RETVAL=$LSB_OK
+	unset procPid
+	local pidFound=0
+	[ -n "$1" ] && local procSearchString="$1" || local procSearchString=$procSearchString
+
+	if [ -s $pidFile ]; then
+		# First we check if $pidFile exists and get its value
+		procPid=$(cat $pidFile 2> /dev/null)
+		ps -fp $procPid | grep -E -q -- "${procSearchString}" > /dev/null 2>&1
+		if [ $? -eq 0 ]; then
+			pidFound=1
+		else
+			return $LSB_DEAD_PID_EXISTS
+		fi
+	fi
+
+	# If $pidFile didn't exist we search for the PID using "pgrep"
+	if [ $pidFound -eq 0 ]; then
+		pidSearch=$(pgrep -d " " -f "${procSearchString}")
+		if [ -n "$pidSearch" ]; then
+			procPid=$pidSearch
+		else
+			unset procPid
+			RETVAL=$LSB_NOT_RUNNING
+		fi
+	fi
+
+	return $RETVAL
 }
 
-nodelist {
-    node {
-        ring0_addr: 192.160.53.226  # IP address of this node
-        nodeid: 1
-    }
-    node {
-        ring0_addr: 192.160.53.227  # IP address of the second node
-        nodeid: 2
-    }
+start(){
+	local RETVAL=$LSB_OK
+	
+	getpid
+	[ $? -eq $LSB_DEAD_PID_EXISTS ] && procPid=
+	echo -n "Starting $prog: "
+	if [ -z "$procPid" ]; then
+		daemon --pidfile=$pidFile $startCmd
+		if [ $? -eq 0 ]; then
+			printStatus $STATUS_SUCCESS
+		else
+			printStatus $STATUS_FAILURE
+			RETVAL=$LSB_NOT_RUNNING
+		fi
+	else
+		printStatus $STATUS_SUCCESS
+	fi
+
+	return $RETVAL
 }
+
+stop(){
+	local RETVAL=$LSB_OK
+
+	getpid
+	if [ -n "$procPid" ]; then
+		echo -n "Stopping $prog: "
+		kill -s TERM $procPid > /dev/null 2>&1
+		if [ $? -eq 0 ]; then
+			killdone=0
+			killSignalSent=0
+			timeout=30
+			dropdeadtimeout=60
+			start=$(date +%s)
+
+			while [ $killdone -eq 0 ]; do
+				getpid
+				curtime=$(date +%s)
+
+				if [ -z "$procPid" ]; then
+					killdone=1
+				elif [ $(($curtime - $start)) -ge $timeout ]; then
+					if [ $killSignalSent -eq 0 ]; then
+						pkill -KILL -P $procPid > /dev/null 2>&1
+						kill -s KILL $procPid > /dev/null 2>&1
+						killSignalSent=1
+					fi
+					sleep 1
+				elif [ $(($curtime - $start)) -ge $dropdeadtimeout ]; then
+					printStatus $STATUS_FAILURE
+					echo "Timed out while trying to stop $prog! (PID $procPid)"
+					return $LSB_UNKNOWN
+				else
+					sleep 1
+				fi
+			done
+
+			rm -f $pidFile
+		fi
+		printStatus $STATUS_SUCCESS
+	else
+		echo -n "Stopping $prog: "
+		printStatus $STATUS_SUCCESS
+	fi
+
+	return $RETVAL
+}
+
+restart(){
+	status
+	if [ $? -eq $LSB_OK ]; then
+		stop
+		local stopStatus=$?
+		[ ${stopStatus} -ne $LSB_OK ] && return ${stopStatus}
+	fi
+
+	start
+	RETVAL=$?
+	return $RETVAL
+}
+
+status(){
+	getpid
+	RETVAL=$?
+	return $RETVAL
+}
+
+# See how we were called.
+case "$1" in
+	start) start;;
+	stop) stop;;
+	status)
+		status
+		[ $? -eq ${LSB_OK} ] && echo "$prog (PID $procPid) is running..." || echo "$prog is stopped...";;
+	restart) restart;;
+	force-reload) restart;;
+	*)
+		echo $"Usage: $0 {start|stop|status|restart|force-reload}"
+		exit $LSB_UNKNOWN
+esac
+
+exit $RETVAL
