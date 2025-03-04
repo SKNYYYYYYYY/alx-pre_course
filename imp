@@ -2,7 +2,7 @@ global_defs {
 	router_id test1
 }
 vrrp_script chk_kalived {
-	script "killall -0 kalived
+	script "killall -0 kalived"
 	interval 2
 	weight 2
 }
@@ -12,13 +12,14 @@ vrrp_instance VI_1 {
 	advert_int 1
 	priority 100
 	state MASTER
-	interface enp0s3
+	interface eth0
 	virtual_ipaddress {
-		"virtual ip" dev enp0s3
+		192.168.247.211 dev eth0
 	}
-	authentication {
-		auth_type PASS
-		auth_pass 123456
+
+authentication {
+	auth_type PASS
+	auth_pass 123456
 	}
 	track_script {
 		chk_kalived
