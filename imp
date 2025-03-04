@@ -16,10 +16,9 @@ vrrp_instance VI_1 {
 	virtual_ipaddress {
 		"virtual ip" dev enp0s3
 	}
-
-authentication {
-	auth_type PASS
-	auth_pass 123456
+	authentication {
+		auth_type PASS
+		auth_pass 123456
 	}
 	track_script {
 		chk_kalived
